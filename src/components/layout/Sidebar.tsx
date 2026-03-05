@@ -12,36 +12,54 @@ import {
   ChevronLeft,
   ChevronRight,
   Zap,
+  X,
 } from "lucide-react";
 
 const navItems = [
-  { href: "/", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/forge", label: "The Forge", icon: Flame },
   { href: "/warroom", label: "War Room", icon: Swords },
   { href: "/alchemy", label: "Alchemy", icon: Sparkles },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
-export default function Sidebar() {
+interface SidebarProps {
+  mobileOpen?: boolean;
+  onClose?: () => void;
+}
+
+export default function Sidebar({ mobileOpen = false, onClose }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
   const pathname = usePathname();
 
   return (
     <aside
-      className={`fixed top-0 left-0 h-screen z-40 flex flex-col border-r border-[var(--color-border)] bg-[var(--color-surface)] transition-all duration-300 ${
-        collapsed ? "w-[68px]" : "w-[240px]"
-      }`}
+      className={`
+        fixed top-0 left-0 h-screen z-40 flex flex-col border-r border-[var(--color-border)] bg-[var(--color-surface)] transition-all duration-300
+        ${collapsed ? "lg:w-[68px]" : "lg:w-[240px]"}
+        ${mobileOpen ? "translate-x-0 w-[280px]" : "-translate-x-full w-[280px]"}
+        lg:translate-x-0
+      `}
     >
       {/* Logo */}
-      <div className="flex items-center gap-3 px-4 h-16 border-b border-[var(--color-border)]">
-        <div className="w-8 h-8 rounded-lg bg-[var(--color-gold)] flex items-center justify-center shrink-0">
-          <Zap className="w-4 h-4 text-black" />
+      <div className="flex items-center justify-between px-4 h-16 border-b border-[var(--color-border)]">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-[var(--color-gold)] flex items-center justify-center shrink-0">
+            <Zap className="w-4 h-4 text-black" />
+          </div>
+          {!collapsed && (
+            <span className="text-lg font-bold tracking-tight text-white whitespace-nowrap">
+              Unfazed<span className="text-[var(--color-gold)]"> OS</span>
+            </span>
+          )}
         </div>
-        {!collapsed && (
-          <span className="text-lg font-bold tracking-tight text-white whitespace-nowrap">
-            Unfazed<span className="text-[var(--color-gold)]"> OS</span>
-          </span>
-        )}
+        {/* Close button on mobile */}
+        <button
+          onClick={onClose}
+          className="lg:hidden p-1.5 rounded-lg hover:bg-[var(--color-surface-hover)] transition-colors"
+        >
+          <X className="w-5 h-5 text-[var(--color-text-muted)]" />
+        </button>
       </div>
 
       {/* Nav */}
@@ -52,18 +70,16 @@ export default function Sidebar() {
             <Link
               key={item.href}
               href={item.href}
-              className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 group ${
-                isActive
+              className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 group ${isActive
                   ? "bg-[var(--color-gold-glow)] text-[var(--color-gold)]"
                   : "text-[var(--color-text-secondary)] hover:text-white hover:bg-[var(--color-surface-hover)]"
-              }`}
+                }`}
             >
               <item.icon
-                className={`w-5 h-5 shrink-0 transition-colors ${
-                  isActive
+                className={`w-5 h-5 shrink-0 transition-colors ${isActive
                     ? "text-[var(--color-gold)]"
                     : "text-[var(--color-text-muted)] group-hover:text-white"
-                }`}
+                  }`}
               />
               {!collapsed && <span className="whitespace-nowrap">{item.label}</span>}
             </Link>
@@ -71,8 +87,8 @@ export default function Sidebar() {
         })}
       </nav>
 
-      {/* Collapse Toggle */}
-      <div className="px-2 pb-4">
+      {/* Collapse Toggle (desktop only) */}
+      <div className="px-2 pb-4 hidden lg:block">
         <button
           onClick={() => setCollapsed(!collapsed)}
           className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-[var(--color-text-muted)] hover:text-white hover:bg-[var(--color-surface-hover)] transition-all text-sm"
