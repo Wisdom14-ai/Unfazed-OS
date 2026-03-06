@@ -179,25 +179,33 @@ export default function Dashboard() {
 
     if (existingLog && existingLog.value > 0) {
       // Remove log
-      await supabase.from("habit_logs").delete().eq("id", existingLog.id);
+      const { error } = await supabase.from("habit_logs").delete().eq("id", existingLog.id);
+      if (error) {
+        showToast(`Failed to update "${habit.name}"`, "error");
+        return;
+      }
       setLogs((prev) => prev.filter((l) => l.id !== existingLog.id));
       showToast(`Unchecked "${habit.name}"`, "info");
-    } else {
-      // Upsert log
-      const { data, error } = await supabase
-        .from("habit_logs")
-        .upsert(
-          { habit_id: habit.id, date: today, value: 1, entry_type: "boolean", time_minutes: null },
-          { onConflict: "habit_id,date" }
-        )
-        .select()
-        .single();
-
-      if (!error && data) {
-        setLogs((prev) => [...prev.filter((l) => l.habit_id !== habit.id), data]);
-        showToast(`Checked "${habit.name}" ✓`, "success");
-      }
+      return;
     }
+
+    // Upsert log
+    const { data, error } = await supabase
+      .from("habit_logs")
+      .upsert(
+        { habit_id: habit.id, date: today, value: 1, entry_type: "boolean", time_minutes: null },
+        { onConflict: "habit_id,date" }
+      )
+      .select()
+      .single();
+
+    if (error || !data) {
+      showToast(`Failed to update "${habit.name}"`, "error");
+      return;
+    }
+
+    setLogs((prev) => [...prev.filter((l) => l.habit_id !== habit.id), data]);
+    showToast(`Checked "${habit.name}"`, "success");
   };
 
   const openInputForHabit = (habit: Habit) => {
@@ -385,39 +393,44 @@ export default function Dashboard() {
               const isDone = isHabitDone(habit);
               const currentValue = getHabitCurrentValue(habit);
               return (
-                <li key={habit.id} className="flex items-center gap-3">
+                <li key={habit.id}>
                   <button
+                    type="button"
                     onClick={() => openInputForHabit(habit)}
-                    className={`w-5 h-5 rounded-md border-2 flex items-center justify-center shrink-0 transition-colors cursor-pointer ${isDone
-                        ? "bg-[var(--color-gold)] border-[var(--color-gold)]"
-                        : "border-[var(--color-border)] hover:border-[var(--color-gold-dim)]"
-                      }`}
+                    className="group w-full flex items-center gap-3 rounded-lg px-1.5 py-1 text-left hover:bg-[var(--color-surface-hover)] transition-colors cursor-pointer"
                   >
-                    {isDone && (
-                      <svg
-                        className="w-3 h-3 text-black"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        stroke="currentColor"
-                        strokeWidth={3}
-                      >
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                      </svg>
-                    )}
-                  </button>
-                  <div className="flex items-center justify-between flex-1 min-w-0 gap-2">
                     <span
-                      className={`text-sm truncate ${isDone
-                          ? "text-[var(--color-text-muted)] line-through"
-                          : "text-[var(--color-text-primary)]"
+                      className={`w-5 h-5 rounded-md border-2 flex items-center justify-center shrink-0 transition-colors ${isDone
+                        ? "bg-[var(--color-gold)] border-[var(--color-gold)]"
+                        : "border-[var(--color-border)] group-hover:border-[var(--color-gold-dim)]"
                         }`}
                     >
-                      {habit.name}
+                      {isDone && (
+                        <svg
+                          className="w-3 h-3 text-black"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                          strokeWidth={3}
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
                     </span>
-                    {currentValue ? (
-                      <span className="text-xs text-[var(--color-text-secondary)] shrink-0">{currentValue}</span>
-                    ) : null}
-                  </div>
+                    <span className="flex items-center justify-between flex-1 min-w-0 gap-2">
+                      <span
+                        className={`text-sm truncate ${isDone
+                          ? "text-[var(--color-text-muted)] line-through"
+                          : "text-[var(--color-text-primary)]"
+                          }`}
+                      >
+                        {habit.name}
+                      </span>
+                      {currentValue ? (
+                        <span className="text-xs text-[var(--color-text-secondary)] shrink-0">{currentValue}</span>
+                      ) : null}
+                    </span>
+                  </button>
                 </li>
               );
             })}
@@ -490,3 +503,4 @@ export default function Dashboard() {
     </div>
   );
 }
+
