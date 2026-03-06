@@ -109,25 +109,31 @@ export type Database = {
                 Row: {
                     created_at: string | null
                     date: string
+                    entry_type: string | null
                     habit_id: string
                     id: string
                     notes: string | null
+                    time_minutes: number | null
                     value: number
                 }
                 Insert: {
                     created_at?: string | null
                     date: string
+                    entry_type?: string | null
                     habit_id: string
                     id?: string
                     notes?: string | null
+                    time_minutes?: number | null
                     value?: number
                 }
                 Update: {
                     created_at?: string | null
                     date?: string
+                    entry_type?: string | null
                     habit_id?: string
                     id?: string
                     notes?: string | null
+                    time_minutes?: number | null
                     value?: number
                 }
                 Relationships: [
@@ -151,6 +157,7 @@ export type Database = {
                     name: string
                     sort_order: number
                     target_value: number | null
+                    time_mode: string | null
                     unit: string | null
                 }
                 Insert: {
@@ -163,6 +170,7 @@ export type Database = {
                     name: string
                     sort_order?: number
                     target_value?: number | null
+                    time_mode?: string | null
                     unit?: string | null
                 }
                 Update: {
@@ -175,6 +183,7 @@ export type Database = {
                     name?: string
                     sort_order?: number
                     target_value?: number | null
+                    time_mode?: string | null
                     unit?: string | null
                 }
                 Relationships: []

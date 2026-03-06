@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState } from "react";
 import {
     Flame,
     Clock,
@@ -16,6 +16,19 @@ import { supabase } from "@/lib/supabase";
 import { useToast } from "@/components/ui/ToastProvider";
 import Modal from "@/components/ui/Modal";
 import type { Tables } from "@/lib/database.types";
+import {
+    averageTimeMinutes,
+    clampPercent,
+    formatMinutes12Hour,
+    formatMinutesForInput,
+    formatNumberValue,
+    getHabitInputType,
+    getHabitTimeMode,
+    getInclusiveDayCount,
+    getMalaysiaDateParts,
+    getWeekStartMonday,
+    parseTimeInputToMinutes,
+} from "@/lib/habitTracking";
 
 type Habit = Tables<"habits">;
 type HabitLog = Tables<"habit_logs">;
@@ -28,8 +41,8 @@ function getDaysInMonth(year: number, month: number) {
 }
 
 function getDayLabel(year: number, month: number, day: number) {
-    const d = new Date(year, month, day);
-    return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getDay()];
+    const d = new Date(Date.UTC(year, month, day));
+    return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getUTCDay()];
 }
 
 function dateStr(year: number, month: number, day: number) {
@@ -46,10 +59,10 @@ const workoutTypeColors: Record<string, string> = {
 
 export default function ForgePage() {
     const { showToast } = useToast();
-    const now = new Date();
-    const [year] = useState(now.getFullYear());
-    const [month] = useState(now.getMonth());
-    const todayDay = now.getDate();
+    const malaysiaToday = getMalaysiaDateParts();
+    const [year] = useState(malaysiaToday.year);
+    const [month] = useState(malaysiaToday.month - 1);
+    const todayDay = malaysiaToday.day;
 
     const [habits, setHabits] = useState<Habit[]>([]);
     const [logs, setLogs] = useState<HabitLog[]>([]);
@@ -71,56 +84,68 @@ export default function ForgePage() {
     const monthName = new Date(year, month).toLocaleString("default", { month: "long" });
 
     const todayStr = dateStr(year, month, todayDay);
-
-    const loadData = useCallback(async () => {
-        setLoading(true);
-        const startDate = dateStr(year, month, 1);
-        const endDate = dateStr(year, month, daysInMonth);
-
-        const [habitsRes, logsRes, dwRes, woRes, metaRes] = await Promise.all([
-            supabase.from("habits").select("*").eq("is_active", true).order("sort_order"),
-            supabase.from("habit_logs").select("*").gte("date", startDate).lte("date", endDate),
-            supabase.from("deep_work_sessions").select("*").gte("date", startDate).lte("date", endDate).order("date", { ascending: false }),
-            supabase.from("workouts").select("*").gte("date", startDate).lte("date", endDate).order("date", { ascending: false }),
-            supabase.from("daily_metadata").select("*").eq("date", todayStr).single(),
-        ]);
-
-        setHabits(habitsRes.data || []);
-        setLogs(logsRes.data || []);
-        setDeepWorkSessions(dwRes.data || []);
-        setWorkouts(woRes.data || []);
-        setDailyMeta(metaRes.data);
-        setLoading(false);
-    }, [year, month, daysInMonth, todayStr]);
+    const monthStartStr = dateStr(year, month, 1);
+    const weekStartStr = getWeekStartMonday(todayStr);
+    const logQueryStartStr = weekStartStr < monthStartStr ? weekStartStr : monthStartStr;
+    const weekElapsedDays = getInclusiveDayCount(weekStartStr, todayStr);
+    const monthElapsedDays = getInclusiveDayCount(monthStartStr, todayStr);
 
     useEffect(() => {
-        loadData();
-    }, [loadData]);
+        const loadData = async () => {
+            setLoading(true);
+            const startDate = monthStartStr;
+            const endDate = dateStr(year, month, daysInMonth);
 
-    // Toggle boolean habit or open number input
+            const [habitsRes, logsRes, dwRes, woRes, metaRes] = await Promise.all([
+                supabase.from("habits").select("*").eq("is_active", true).order("sort_order"),
+                supabase.from("habit_logs").select("*").gte("date", logQueryStartStr).lte("date", endDate),
+                supabase.from("deep_work_sessions").select("*").gte("date", startDate).lte("date", endDate).order("date", { ascending: false }),
+                supabase.from("workouts").select("*").gte("date", startDate).lte("date", endDate).order("date", { ascending: false }),
+                supabase.from("daily_metadata").select("*").eq("date", todayStr).single(),
+            ]);
+
+            setHabits(habitsRes.data || []);
+            setLogs(logsRes.data || []);
+            setDeepWorkSessions(dwRes.data || []);
+            setWorkouts(woRes.data || []);
+            setDailyMeta(metaRes.data);
+            setLoading(false);
+        };
+
+        void loadData();
+    }, [year, month, daysInMonth, todayStr, logQueryStartStr, monthStartStr]);
+
+    // Toggle boolean habit or open input modal
     const handleCellClick = async (habit: Habit, day: number) => {
         if (day > todayDay) return; // Can't log future
+        const inputType = getHabitInputType(habit.input_type);
+        const ds = dateStr(year, month, day);
+        const existing = logs.find((l) => l.habit_id === habit.id && l.date === ds);
 
-        if (habit.input_type === "number") {
-            const existing = logs.find(
-                (l) => l.habit_id === habit.id && l.date === dateStr(year, month, day)
-            );
+        if (inputType === "number") {
             setCellValue(existing ? String(existing.value) : "");
             setEditingCell({ habit, day });
             return;
         }
 
-        // Boolean toggle
-        const ds = dateStr(year, month, day);
-        const existing = logs.find((l) => l.habit_id === habit.id && l.date === ds);
+        if (inputType === "time") {
+            const existingTimeValue =
+                existing?.entry_type === "time" && typeof existing.time_minutes === "number"
+                    ? formatMinutesForInput(existing.time_minutes)
+                    : "";
+            setCellValue(existingTimeValue);
+            setEditingCell({ habit, day });
+            return;
+        }
 
+        // Boolean toggle
         if (existing && existing.value > 0) {
             await supabase.from("habit_logs").delete().eq("id", existing.id);
             setLogs((prev) => prev.filter((l) => l.id !== existing.id));
         } else {
             const { data } = await supabase
                 .from("habit_logs")
-                .upsert({ habit_id: habit.id, date: ds, value: 1 }, { onConflict: "habit_id,date" })
+                .upsert({ habit_id: habit.id, date: ds, value: 1, entry_type: "boolean", time_minutes: null }, { onConflict: "habit_id,date" })
                 .select()
                 .single();
             if (data) setLogs((prev) => [...prev.filter((l) => !(l.habit_id === habit.id && l.date === ds)), data]);
@@ -130,31 +155,65 @@ export default function ForgePage() {
     const saveCellValue = async () => {
         if (!editingCell) return;
         const ds = dateStr(year, month, editingCell.day);
-        const val = parseFloat(cellValue) || 0;
-        if (val === 0) {
-            const existing = logs.find((l) => l.habit_id === editingCell.habit.id && l.date === ds);
-            if (existing) {
-                await supabase.from("habit_logs").delete().eq("id", existing.id);
-                setLogs((prev) => prev.filter((l) => l.id !== existing.id));
+        const inputType = getHabitInputType(editingCell.habit.input_type);
+        const existing = logs.find((l) => l.habit_id === editingCell.habit.id && l.date === ds);
+
+        if (inputType === "number") {
+            const value = parseFloat(cellValue);
+            if (!Number.isFinite(value) || value <= 0) {
+                if (existing) {
+                    await supabase.from("habit_logs").delete().eq("id", existing.id);
+                    setLogs((prev) => prev.filter((l) => l.id !== existing.id));
+                }
+            } else {
+                const { data } = await supabase
+                    .from("habit_logs")
+                    .upsert(
+                        { habit_id: editingCell.habit.id, date: ds, value, entry_type: "number", time_minutes: null },
+                        { onConflict: "habit_id,date" }
+                    )
+                    .select()
+                    .single();
+                if (data) setLogs((prev) => [...prev.filter((l) => !(l.habit_id === editingCell.habit.id && l.date === ds)), data]);
             }
-        } else {
-            const { data } = await supabase
-                .from("habit_logs")
-                .upsert({ habit_id: editingCell.habit.id, date: ds, value: val }, { onConflict: "habit_id,date" })
-                .select()
-                .single();
-            if (data) setLogs((prev) => [...prev.filter((l) => !(l.habit_id === editingCell.habit.id && l.date === ds)), data]);
+        } else if (inputType === "time") {
+            const timeMinutes = parseTimeInputToMinutes(cellValue);
+            if (timeMinutes === null) {
+                if (existing) {
+                    await supabase.from("habit_logs").delete().eq("id", existing.id);
+                    setLogs((prev) => prev.filter((l) => l.id !== existing.id));
+                }
+            } else {
+                const hourValue = Math.round((timeMinutes / 60) * 100) / 100;
+                const { data } = await supabase
+                    .from("habit_logs")
+                    .upsert(
+                        { habit_id: editingCell.habit.id, date: ds, value: hourValue, entry_type: "time", time_minutes: timeMinutes },
+                        { onConflict: "habit_id,date" }
+                    )
+                    .select()
+                    .single();
+                if (data) setLogs((prev) => [...prev.filter((l) => !(l.habit_id === editingCell.habit.id && l.date === ds)), data]);
+            }
         }
         setEditingCell(null);
-        showToast("Value saved", "success");
+        showToast("Entry saved", "success");
     };
 
     // Cell color
     const getCellColor = (habit: Habit, day: number) => {
         if (day > todayDay) return "bg-[var(--color-surface)]";
+        const inputType = getHabitInputType(habit.input_type);
         const log = logs.find((l) => l.habit_id === habit.id && l.date === dateStr(year, month, day));
+
+        if (inputType === "time") {
+            const hasTimeLog = log?.entry_type === "time" && typeof log.time_minutes === "number";
+            if (!hasTimeLog) return "bg-red-500/20 border-red-500/30";
+            return "bg-emerald-500/20 border-emerald-500/30";
+        }
+
         if (!log || log.value === 0) return "bg-red-500/20 border-red-500/30";
-        if (habit.input_type === "number" && habit.target_value) {
+        if (inputType === "number" && habit.target_value) {
             return log.value >= habit.target_value
                 ? "bg-emerald-500/20 border-emerald-500/30"
                 : "bg-yellow-500/20 border-yellow-500/30";
@@ -165,25 +224,51 @@ export default function ForgePage() {
     const getCellText = (habit: Habit, day: number) => {
         if (day > todayDay) return "";
         const log = logs.find((l) => l.habit_id === habit.id && l.date === dateStr(year, month, day));
+        const inputType = getHabitInputType(habit.input_type);
+
+        if (inputType === "time") {
+            return log?.entry_type === "time" && typeof log.time_minutes === "number" ? "*" : "";
+        }
+
         if (!log || log.value === 0) return "";
-        if (habit.input_type === "number") return String(log.value);
-        return "✓";
+        if (inputType === "number") return formatNumberValue(log.value);
+        return "Y";
     };
 
-    // Monthly stats
-    const getMonthlyTotal = (habit: Habit) => {
-        return logs
-            .filter((l) => l.habit_id === habit.id && l.value > 0)
-            .reduce((sum, l) => sum + l.value, 0);
+    // Weekly + monthly summaries
+    const getRangeLogs = (habit: Habit, startDate: string, endDate: string) => {
+        return logs.filter((l) => l.habit_id === habit.id && l.date >= startDate && l.date <= endDate);
     };
 
-    const getMonthlyAvg = (habit: Habit) => {
-        const habitLogs = logs.filter((l) => l.habit_id === habit.id && l.value > 0);
-        if (habitLogs.length === 0) return 0;
-        const total = habitLogs.reduce((sum, l) => sum + l.value, 0);
-        if (habit.input_type === "boolean") return Math.round((habitLogs.length / todayDay) * 100);
-        return Math.round((total / todayDay) * 100) / 100;
+    const formatPercent = (value: number) => `${Math.round(clampPercent(value))}%`;
+
+    const getRangeSummary = (habit: Habit, startDate: string, endDate: string, elapsedDays: number) => {
+        const inputType = getHabitInputType(habit.input_type);
+        const rangeLogs = getRangeLogs(habit, startDate, endDate);
+
+        if (inputType === "time") {
+            const minutes = rangeLogs
+                .filter((log) => log.entry_type === "time" && typeof log.time_minutes === "number")
+                .map((log) => log.time_minutes as number);
+            const avgMinutes = averageTimeMinutes(minutes, getHabitTimeMode(habit.time_mode) === "sleep");
+            return avgMinutes === null ? "-" : formatMinutes12Hour(avgMinutes);
+        }
+
+        if (inputType === "boolean") {
+            const completedDays = new Set(rangeLogs.filter((log) => log.value > 0).map((log) => log.date)).size;
+            return formatPercent((completedDays / elapsedDays) * 100);
+        }
+
+        const total = rangeLogs.filter((log) => log.value > 0).reduce((sum, log) => sum + log.value, 0);
+        const target = habit.target_value || 0;
+        if (target <= 0) return "0%";
+
+        return formatPercent((total / (target * elapsedDays)) * 100);
     };
+
+    const getWeekSummary = (habit: Habit) => getRangeSummary(habit, weekStartStr, todayStr, weekElapsedDays);
+    const getMonthSummary = (habit: Habit) => getRangeSummary(habit, monthStartStr, todayStr, monthElapsedDays);
+    const editingInputType = editingCell ? getHabitInputType(editingCell.habit.input_type) : "number";
 
     // Screen time & OMAD
     const [screenTime, setScreenTime] = useState("0");
@@ -248,7 +333,7 @@ export default function ForgePage() {
             setWorkouts((prev) => [data, ...prev]);
             setShowWorkoutModal(false);
             setWoForm({ date: todayStr, type: "Heavy Lifting", duration: "60", notes: "" });
-            showToast("Workout logged! 💪", "success");
+            showToast("Workout logged!", "success");
         }
     };
 
@@ -272,15 +357,15 @@ export default function ForgePage() {
                     The Forge
                 </h1>
                 <p className="text-[var(--color-text-secondary)] mt-1">
-                    10% Routine That Leads to 90% Results — {monthName} {year}
+                    10% Routine That Leads to 90% Results - {monthName} {year}
                 </p>
             </div>
 
-            {/* ─── FULL MONTH HABIT MATRIX ─── */}
+            {/* FULL MONTH HABIT MATRIX */}
             <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] overflow-hidden">
                 <div className="px-6 py-4 border-b border-[var(--color-border)] flex items-center justify-between">
                     <h2 className="text-lg font-semibold text-white">
-                        Habit Matrix — {monthName} {year}
+                        Habit Matrix - {monthName} {year}
                     </h2>
                     <span className="text-xs font-medium px-2.5 py-1 rounded-full bg-[var(--color-gold-glow)] text-[var(--color-gold)]">
                         Day {todayDay} of {daysInMonth}
@@ -304,10 +389,10 @@ export default function ForgePage() {
                                     </th>
                                 ))}
                                 <th className="px-3 py-2 text-[var(--color-text-muted)] uppercase tracking-wider font-medium text-center">
-                                    Total
+                                    Week
                                 </th>
                                 <th className="px-3 py-2 text-[var(--color-text-muted)] uppercase tracking-wider font-medium text-center">
-                                    Avg
+                                    Month
                                 </th>
                             </tr>
                         </thead>
@@ -331,12 +416,10 @@ export default function ForgePage() {
                                         </td>
                                     ))}
                                     <td className="px-3 py-2 text-center">
-                                        <span className="text-xs font-bold text-white">{getMonthlyTotal(habit)}</span>
+                                        <span className="text-xs font-medium text-white">{getWeekSummary(habit)}</span>
                                     </td>
                                     <td className="px-3 py-2 text-center">
-                                        <span className="text-xs font-medium text-[var(--color-text-secondary)]">
-                                            {habit.input_type === "boolean" ? `${getMonthlyAvg(habit)}%` : getMonthlyAvg(habit)}
-                                        </span>
+                                        <span className="text-xs font-medium text-[var(--color-text-secondary)]">{getMonthSummary(habit)}</span>
                                     </td>
                                 </tr>
                             ))}
@@ -345,7 +428,7 @@ export default function ForgePage() {
                 </div>
             </div>
 
-            {/* Numeric Input Modal */}
+            {/* Habit Input Modal */}
             <Modal
                 isOpen={!!editingCell}
                 onClose={() => setEditingCell(null)}
@@ -353,18 +436,31 @@ export default function ForgePage() {
             >
                 <div className="space-y-4">
                     <p className="text-sm text-[var(--color-text-secondary)]">
-                        Enter value for Day {editingCell?.day} ({editingCell?.habit.unit || "units"})
+                        {editingInputType === "time"
+                            ? `Enter time for Day ${editingCell?.day}`
+                            : `Enter value for Day ${editingCell?.day} (${editingCell?.habit.unit || "units"})`}
                     </p>
-                    <input
-                        type="number"
-                        value={cellValue}
-                        onChange={(e) => setCellValue(e.target.value)}
-                        placeholder={`Target: ${editingCell?.habit.target_value || 0}`}
-                        className="w-full bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg px-4 py-2.5 text-sm text-white placeholder:text-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-gold)] transition-colors"
-                        autoFocus
-                        step="0.5"
-                        onKeyDown={(e) => { if (e.key === "Enter") saveCellValue(); }}
-                    />
+                    {editingInputType === "time" ? (
+                        <input
+                            type="time"
+                            value={cellValue}
+                            onChange={(e) => setCellValue(e.target.value)}
+                            className="w-full bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[var(--color-gold)] transition-colors"
+                            autoFocus
+                            onKeyDown={(e) => { if (e.key === "Enter") saveCellValue(); }}
+                        />
+                    ) : (
+                        <input
+                            type="number"
+                            value={cellValue}
+                            onChange={(e) => setCellValue(e.target.value)}
+                            placeholder={`Target: ${editingCell?.habit.target_value || 0}`}
+                            className="w-full bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg px-4 py-2.5 text-sm text-white placeholder:text-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-gold)] transition-colors"
+                            autoFocus
+                            step="0.5"
+                            onKeyDown={(e) => { if (e.key === "Enter") saveCellValue(); }}
+                        />
+                    )}
                     <button
                         onClick={saveCellValue}
                         className="w-full px-4 py-2.5 rounded-lg bg-[var(--color-gold)] text-black text-sm font-semibold hover:bg-[var(--color-gold-dim)] transition-colors"
@@ -374,7 +470,7 @@ export default function ForgePage() {
                 </div>
             </Modal>
 
-            {/* ─── DEEP WORK ENGINE + SCREEN TIME ─── */}
+            {/* DEEP WORK ENGINE + SCREEN TIME */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div className="lg:col-span-2 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-6">
                     <div className="flex items-center justify-between mb-5">
@@ -439,18 +535,18 @@ export default function ForgePage() {
                         <p className="text-sm text-[var(--color-text-muted)] mt-3">Today&apos;s phone usage</p>
                         <div className="mt-4">
                             {parseFloat(screenTime) <= 2 ? (
-                                <span className="text-xs font-medium px-3 py-1.5 rounded-full bg-emerald-500/10 text-emerald-400">🎯 Under control</span>
+                                <span className="text-xs font-medium px-3 py-1.5 rounded-full bg-emerald-500/10 text-emerald-400">Under control</span>
                             ) : parseFloat(screenTime) <= 4 ? (
-                                <span className="text-xs font-medium px-3 py-1.5 rounded-full bg-yellow-500/10 text-yellow-400">⚠️ Watch it</span>
+                                <span className="text-xs font-medium px-3 py-1.5 rounded-full bg-yellow-500/10 text-yellow-400">Watch it</span>
                             ) : (
-                                <span className="text-xs font-medium px-3 py-1.5 rounded-full bg-red-500/10 text-red-400">🚨 Too high</span>
+                                <span className="text-xs font-medium px-3 py-1.5 rounded-full bg-red-500/10 text-red-400">Too high</span>
                             )}
                         </div>
                     </div>
                 </div>
             </div>
 
-            {/* ─── PHYSICAL & DIET ─── */}
+            {/* PHYSICAL & DIET */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 {/* Workout Logger */}
                 <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-6">
@@ -477,7 +573,7 @@ export default function ForgePage() {
                                     </span>
                                     <div className="flex-1 min-w-0">
                                         <p className="text-sm text-white truncate">{w.notes || "No notes"}</p>
-                                        <p className="text-xs text-[var(--color-text-muted)]">{w.date} · {w.duration_minutes} min</p>
+                                        <p className="text-xs text-[var(--color-text-muted)]">{w.date} - {w.duration_minutes} min</p>
                                     </div>
                                 </div>
                             ))
@@ -537,7 +633,7 @@ export default function ForgePage() {
                 </div>
             </div>
 
-            {/* ─── MODALS ─── */}
+            {/* MODALS */}
             {/* Deep Work Modal */}
             <Modal isOpen={showDWModal} onClose={() => setShowDWModal(false)} title="Log Deep Work Session">
                 <div className="space-y-4">
@@ -551,7 +647,7 @@ export default function ForgePage() {
                     </div>
                     <div>
                         <label className="block text-xs font-medium text-[var(--color-text-muted)] mb-1.5 uppercase tracking-wider">Focus</label>
-                        <input type="text" value={dwForm.focus} onChange={(e) => setDwForm({ ...dwForm, focus: e.target.value })} placeholder="e.g. Client Proposal — Attic KL" className="w-full bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg px-4 py-2.5 text-sm text-white placeholder:text-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-gold)] transition-colors" />
+                        <input type="text" value={dwForm.focus} onChange={(e) => setDwForm({ ...dwForm, focus: e.target.value })} placeholder="e.g. Client Proposal - Attic KL" className="w-full bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg px-4 py-2.5 text-sm text-white placeholder:text-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-gold)] transition-colors" />
                     </div>
                     <label className="flex items-center gap-3 cursor-pointer">
                         <input type="checkbox" checked={dwForm.completed} onChange={(e) => setDwForm({ ...dwForm, completed: e.target.checked })} className="sr-only" />

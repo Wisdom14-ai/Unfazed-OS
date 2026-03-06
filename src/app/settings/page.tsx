@@ -22,6 +22,12 @@ import { supabase } from "@/lib/supabase";
 import { useToast } from "@/components/ui/ToastProvider";
 import Modal from "@/components/ui/Modal";
 import type { Tables } from "@/lib/database.types";
+import {
+    getHabitInputType,
+    getHabitTimeMode,
+    type HabitInputType,
+    type HabitTimeMode,
+} from "@/lib/habitTracking";
 
 type Tab = "profile" | "habits" | "billing";
 type UserProfile = Tables<"user_profile">;
@@ -86,9 +92,10 @@ export default function SettingsPage() {
         name: "",
         icon: "star",
         category: "General",
-        input_type: "boolean" as "boolean" | "number",
+        input_type: "boolean" as HabitInputType,
         target_value: "1",
         unit: "",
+        time_mode: "clock" as HabitTimeMode,
     });
 
     const loadData = useCallback(async () => {
@@ -138,7 +145,15 @@ export default function SettingsPage() {
 
     const openAddHabit = () => {
         setEditingHabit(null);
-        setHabitForm({ name: "", icon: "star", category: "General", input_type: "boolean", target_value: "1", unit: "" });
+        setHabitForm({
+            name: "",
+            icon: "star",
+            category: "General",
+            input_type: "boolean",
+            target_value: "1",
+            unit: "",
+            time_mode: "clock",
+        });
         setShowHabitModal(true);
     };
 
@@ -148,9 +163,10 @@ export default function SettingsPage() {
             name: habit.name,
             icon: habit.icon,
             category: habit.category,
-            input_type: habit.input_type as "boolean" | "number",
+            input_type: getHabitInputType(habit.input_type),
             target_value: String(habit.target_value || 1),
             unit: habit.unit || "",
+            time_mode: getHabitTimeMode(habit.time_mode),
         });
         setShowHabitModal(true);
     };
@@ -165,8 +181,9 @@ export default function SettingsPage() {
             icon: habitForm.icon,
             category: habitForm.category,
             input_type: habitForm.input_type,
-            target_value: parseFloat(habitForm.target_value) || 1,
-            unit: habitForm.unit,
+            target_value: habitForm.input_type === "number" ? (parseFloat(habitForm.target_value) || 1) : null,
+            unit: habitForm.input_type === "number" ? habitForm.unit : null,
+            time_mode: habitForm.input_type === "time" ? habitForm.time_mode : "clock",
         };
 
         if (editingHabit) {
@@ -313,8 +330,12 @@ export default function SettingsPage() {
                                 <div className="flex-1 min-w-0">
                                     <p className="text-sm font-medium text-white">{habit.name}</p>
                                     <p className="text-xs text-[var(--color-text-muted)]">
-                                        {habit.category} · {habit.input_type === "boolean" ? "Toggle" : `Number (${habit.unit || "units"})`}
-                                        {habit.target_value && habit.input_type === "number" ? ` · Target: ${habit.target_value}` : ""}
+                                        {habit.category} · {getHabitInputType(habit.input_type) === "boolean"
+                                            ? "Toggle"
+                                            : getHabitInputType(habit.input_type) === "number"
+                                                ? `Number (${habit.unit || "units"})`
+                                                : `Time (${getHabitTimeMode(habit.time_mode) === "sleep" ? "Sleep" : "Regular"})`}
+                                        {habit.target_value && getHabitInputType(habit.input_type) === "number" ? ` · Target: ${habit.target_value}` : ""}
                                     </p>
                                 </div>
                                 <div className="flex items-center gap-2">
@@ -417,12 +438,15 @@ export default function SettingsPage() {
                     </div>
                     <div>
                         <label className="block text-xs font-medium text-[var(--color-text-muted)] mb-1.5 uppercase tracking-wider">Type</label>
-                        <div className="flex gap-2">
+                        <div className="grid grid-cols-3 gap-2">
                             <button onClick={() => setHabitForm({ ...habitForm, input_type: "boolean" })} className={`flex-1 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${habitForm.input_type === "boolean" ? "bg-[var(--color-gold)] text-black" : "bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-text-muted)]"}`}>
                                 Toggle (Yes/No)
                             </button>
                             <button onClick={() => setHabitForm({ ...habitForm, input_type: "number" })} className={`flex-1 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${habitForm.input_type === "number" ? "bg-[var(--color-gold)] text-black" : "bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-text-muted)]"}`}>
                                 Number Input
+                            </button>
+                            <button onClick={() => setHabitForm({ ...habitForm, input_type: "time" })} className={`flex-1 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${habitForm.input_type === "time" ? "bg-[var(--color-gold)] text-black" : "bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-text-muted)]"}`}>
+                                Time
                             </button>
                         </div>
                     </div>
@@ -437,6 +461,24 @@ export default function SettingsPage() {
                                 <input type="text" value={habitForm.unit} onChange={(e) => setHabitForm({ ...habitForm, unit: e.target.value })} placeholder="e.g. pages, hours" className="w-full bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg px-4 py-2.5 text-sm text-white placeholder:text-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-gold)] transition-colors" />
                             </div>
                         </div>
+                    )}
+                    {habitForm.input_type === "time" && (
+                        <>
+                            <div>
+                                <label className="block text-xs font-medium text-[var(--color-text-muted)] mb-1.5 uppercase tracking-wider">Time Mode</label>
+                                <select
+                                    value={habitForm.time_mode}
+                                    onChange={(e) => setHabitForm({ ...habitForm, time_mode: e.target.value as HabitTimeMode })}
+                                    className="w-full bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[var(--color-gold)] transition-colors appearance-none"
+                                >
+                                    <option value="clock">Regular Time</option>
+                                    <option value="sleep">Sleep Time (midnight wrap)</option>
+                                </select>
+                            </div>
+                            <p className="text-xs text-[var(--color-text-muted)] rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
+                                Existing logs stay unchanged. Time averages use only new time entries.
+                            </p>
+                        </>
                     )}
                     <button onClick={saveHabit} className="w-full px-4 py-2.5 rounded-lg bg-[var(--color-gold)] text-black text-sm font-semibold hover:bg-[var(--color-gold-dim)] transition-colors">
                         {editingHabit ? "Update Habit" : "Add Habit"}

@@ -13,14 +13,23 @@ import {
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useToast } from "@/components/ui/ToastProvider";
+import Modal from "@/components/ui/Modal";
 import type { Tables } from "@/lib/database.types";
+import {
+  formatMinutes12Hour,
+  formatMinutesForInput,
+  formatNumberValue,
+  getHabitInputType,
+  getMalaysiaDateParts,
+  getMalaysiaTodayStr,
+  parseTimeInputToMinutes,
+} from "@/lib/habitTracking";
 
 type Habit = Tables<"habits">;
 type HabitLog = Tables<"habit_logs">;
 
-function getTodayStr() {
-  const d = new Date();
-  return d.toISOString().split("T")[0];
+function dateStrFromUTC(date: Date) {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
 }
 
 export default function Dashboard() {
@@ -32,9 +41,11 @@ export default function Dashboard() {
   const [revenueTarget] = useState(60000);
   const [streak, setStreak] = useState(0);
   const [recentActivity, setRecentActivity] = useState<{ time: string; text: string; icon: string }[]>([]);
+  const [editingHabit, setEditingHabit] = useState<Habit | null>(null);
+  const [inputValue, setInputValue] = useState("");
   const [loading, setLoading] = useState(true);
 
-  const today = getTodayStr();
+  const today = getMalaysiaTodayStr();
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -69,9 +80,10 @@ export default function Dashboard() {
 
       // Calculate streak - consecutive days with at least 1 habit logged
       let streakCount = 0;
-      const checkDate = new Date();
+      const malaysiaNow = getMalaysiaDateParts();
+      const checkDate = new Date(Date.UTC(malaysiaNow.year, malaysiaNow.month - 1, malaysiaNow.day));
       for (let i = 0; i < 365; i++) {
-        const dateStr = checkDate.toISOString().split("T")[0];
+        const dateStr = dateStrFromUTC(checkDate);
         const { data: dayLogs } = await supabase
           .from("habit_logs")
           .select("id")
@@ -79,11 +91,11 @@ export default function Dashboard() {
           .limit(1);
         if (dayLogs && dayLogs.length > 0) {
           streakCount++;
-          checkDate.setDate(checkDate.getDate() - 1);
+          checkDate.setUTCDate(checkDate.getUTCDate() - 1);
         } else {
           if (i === 0) {
             // Today not started yet, check from yesterday
-            checkDate.setDate(checkDate.getDate() - 1);
+            checkDate.setUTCDate(checkDate.getUTCDate() - 1);
             continue;
           }
           break;
@@ -97,11 +109,19 @@ export default function Dashboard() {
         .order("created_at", { ascending: false })
         .limit(5);
 
-      const activity = (recentLogs || []).map((log) => ({
-        time: new Date(log.created_at || "").toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }),
-        text: `Completed ${(log as { habits: { name: string } | null }).habits?.name || "habit"} — ${log.value > 1 ? log.value + " logged" : "done"}`,
-        icon: "✅",
-      }));
+      const activity = (recentLogs || []).map((log) => {
+        let suffix = "done";
+        if (log.entry_type === "time" && typeof log.time_minutes === "number") {
+          suffix = formatMinutes12Hour(log.time_minutes);
+        } else if (log.value > 0 && (log.entry_type === "number" || log.value !== 1)) {
+          suffix = `${formatNumberValue(log.value)} logged`;
+        }
+        return {
+          time: new Date(log.created_at || "").toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }),
+          text: `Completed ${(log as { habits: { name: string } | null }).habits?.name || "habit"} — ${suffix}`,
+          icon: "✅",
+        };
+      });
 
       setHabits(habitsData || []);
       setLogs(logsData || []);
@@ -125,12 +145,36 @@ export default function Dashboard() {
     loadData();
   }, [loadData]);
 
-  const completedCount = habits.filter((h) =>
-    logs.some((l) => l.habit_id === h.id && l.value > 0)
-  ).length;
+  const isHabitDone = (habit: Habit) => {
+    const inputType = getHabitInputType(habit.input_type);
+    if (inputType === "boolean") {
+      return logs.some((log) => log.habit_id === habit.id && log.value > 0);
+    }
+    return logs.some((log) => log.habit_id === habit.id);
+  };
+
+  const getHabitCurrentValue = (habit: Habit) => {
+    const inputType = getHabitInputType(habit.input_type);
+    const existing = logs.find((log) => log.habit_id === habit.id);
+    if (!existing) return "";
+
+    if (inputType === "number") {
+      const left = formatNumberValue(existing.value);
+      const right = habit.target_value ? formatNumberValue(habit.target_value) : "1";
+      return `${left}/${right}`;
+    }
+
+    if (inputType === "time" && existing.entry_type === "time" && typeof existing.time_minutes === "number") {
+      return formatMinutes12Hour(existing.time_minutes);
+    }
+
+    return "";
+  };
+
+  const completedCount = habits.filter((habit) => isHabitDone(habit)).length;
   const progress = habits.length > 0 ? (completedCount / habits.length) * 100 : 0;
 
-  const toggleHabit = async (habit: Habit) => {
+  const toggleBooleanHabit = async (habit: Habit) => {
     const existingLog = logs.find((l) => l.habit_id === habit.id);
 
     if (existingLog && existingLog.value > 0) {
@@ -143,7 +187,7 @@ export default function Dashboard() {
       const { data, error } = await supabase
         .from("habit_logs")
         .upsert(
-          { habit_id: habit.id, date: today, value: 1 },
+          { habit_id: habit.id, date: today, value: 1, entry_type: "boolean", time_minutes: null },
           { onConflict: "habit_id,date" }
         )
         .select()
@@ -156,11 +200,87 @@ export default function Dashboard() {
     }
   };
 
+  const openInputForHabit = (habit: Habit) => {
+    const inputType = getHabitInputType(habit.input_type);
+    if (inputType === "boolean") {
+      void toggleBooleanHabit(habit);
+      return;
+    }
+
+    const existing = logs.find((log) => log.habit_id === habit.id);
+    if (inputType === "number") {
+      setInputValue(existing ? String(existing.value) : "");
+    } else {
+      const initial =
+        existing?.entry_type === "time" && typeof existing.time_minutes === "number"
+          ? formatMinutesForInput(existing.time_minutes)
+          : "";
+      setInputValue(initial);
+    }
+    setEditingHabit(habit);
+  };
+
+  const saveHabitInput = async () => {
+    if (!editingHabit) return;
+
+    const inputType = getHabitInputType(editingHabit.input_type);
+    const existing = logs.find((log) => log.habit_id === editingHabit.id);
+
+    if (inputType === "number") {
+      const value = parseFloat(inputValue);
+      if (!Number.isFinite(value) || value <= 0) {
+        if (existing) {
+          await supabase.from("habit_logs").delete().eq("id", existing.id);
+          setLogs((prev) => prev.filter((log) => log.id !== existing.id));
+        }
+      } else {
+        const { data } = await supabase
+          .from("habit_logs")
+          .upsert(
+            { habit_id: editingHabit.id, date: today, value, entry_type: "number", time_minutes: null },
+            { onConflict: "habit_id,date" }
+          )
+          .select()
+          .single();
+        if (data) {
+          setLogs((prev) => [...prev.filter((log) => log.habit_id !== editingHabit.id), data]);
+        }
+      }
+    }
+
+    if (inputType === "time") {
+      const timeMinutes = parseTimeInputToMinutes(inputValue);
+      if (timeMinutes === null) {
+        if (existing) {
+          await supabase.from("habit_logs").delete().eq("id", existing.id);
+          setLogs((prev) => prev.filter((log) => log.id !== existing.id));
+        }
+      } else {
+        const hourValue = Math.round((timeMinutes / 60) * 100) / 100;
+        const { data } = await supabase
+          .from("habit_logs")
+          .upsert(
+            { habit_id: editingHabit.id, date: today, value: hourValue, entry_type: "time", time_minutes: timeMinutes },
+            { onConflict: "habit_id,date" }
+          )
+          .select()
+          .single();
+        if (data) {
+          setLogs((prev) => [...prev.filter((log) => log.habit_id !== editingHabit.id), data]);
+        }
+      }
+    }
+
+    setEditingHabit(null);
+    showToast("Entry saved", "success");
+  };
+  const editingInputType = editingHabit ? getHabitInputType(editingHabit.input_type) : "number";
+
   const stats = [
     {
       label: "Habits Completed",
       value: `${completedCount}/${habits.length}`,
-      change: completedCount === habits.length ? "All done! 🔥" : `${habits.length - completedCount} remaining`,
+      change: completedCount === habits.length ? "All done!" : `${habits.length - completedCount} remaining`,
       icon: CheckCircle2,
       color: "text-emerald-400",
     },
@@ -262,11 +382,12 @@ export default function Dashboard() {
 
           <ul className="space-y-3">
             {habits.map((habit) => {
-              const isDone = logs.some((l) => l.habit_id === habit.id && l.value > 0);
+              const isDone = isHabitDone(habit);
+              const currentValue = getHabitCurrentValue(habit);
               return (
                 <li key={habit.id} className="flex items-center gap-3">
                   <button
-                    onClick={() => toggleHabit(habit)}
+                    onClick={() => openInputForHabit(habit)}
                     className={`w-5 h-5 rounded-md border-2 flex items-center justify-center shrink-0 transition-colors cursor-pointer ${isDone
                         ? "bg-[var(--color-gold)] border-[var(--color-gold)]"
                         : "border-[var(--color-border)] hover:border-[var(--color-gold-dim)]"
@@ -284,14 +405,19 @@ export default function Dashboard() {
                       </svg>
                     )}
                   </button>
-                  <span
-                    className={`text-sm ${isDone
-                        ? "text-[var(--color-text-muted)] line-through"
-                        : "text-[var(--color-text-primary)]"
-                      }`}
-                  >
-                    {habit.name}
-                  </span>
+                  <div className="flex items-center justify-between flex-1 min-w-0 gap-2">
+                    <span
+                      className={`text-sm truncate ${isDone
+                          ? "text-[var(--color-text-muted)] line-through"
+                          : "text-[var(--color-text-primary)]"
+                        }`}
+                    >
+                      {habit.name}
+                    </span>
+                    {currentValue ? (
+                      <span className="text-xs text-[var(--color-text-secondary)] shrink-0">{currentValue}</span>
+                    ) : null}
+                  </div>
                 </li>
               );
             })}
@@ -320,6 +446,47 @@ export default function Dashboard() {
           </ul>
         </div>
       </div>
+
+      <Modal
+        isOpen={!!editingHabit}
+        onClose={() => setEditingHabit(null)}
+        title={`Log ${editingHabit?.name || ""}`}
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-[var(--color-text-secondary)]">
+            {editingInputType === "time"
+              ? "Enter time for today"
+              : `Enter value for today (${editingHabit?.unit || "units"})`}
+          </p>
+          {editingInputType === "time" ? (
+            <input
+              type="time"
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              className="w-full bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[var(--color-gold)] transition-colors"
+              autoFocus
+              onKeyDown={(e) => { if (e.key === "Enter") saveHabitInput(); }}
+            />
+          ) : (
+            <input
+              type="number"
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              placeholder={`Target: ${editingHabit?.target_value || 0}`}
+              className="w-full bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg px-4 py-2.5 text-sm text-white placeholder:text-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-gold)] transition-colors"
+              autoFocus
+              step="0.5"
+              onKeyDown={(e) => { if (e.key === "Enter") saveHabitInput(); }}
+            />
+          )}
+          <button
+            onClick={saveHabitInput}
+            className="w-full px-4 py-2.5 rounded-lg bg-[var(--color-gold)] text-black text-sm font-semibold hover:bg-[var(--color-gold-dim)] transition-colors"
+          >
+            Save
+          </button>
+        </div>
+      </Modal>
     </div>
   );
 }
