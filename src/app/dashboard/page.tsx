@@ -14,7 +14,8 @@ import {
 import { supabase } from "@/lib/supabase";
 import { useToast } from "@/components/ui/ToastProvider";
 import Modal from "@/components/ui/Modal";
-import type { Tables } from "@/lib/database.types";
+import { useAuth } from "@/contexts/AuthContext";
+import type { Tables, TablesInsert } from "@/lib/database.types";
 import {
   formatMinutes12Hour,
   formatMinutesForInput,
@@ -33,6 +34,7 @@ function dateStrFromUTC(date: Date) {
 }
 
 export default function Dashboard() {
+  const { user } = useAuth();
   const { showToast } = useToast();
   const [habits, setHabits] = useState<Habit[]>([]);
   const [logs, setLogs] = useState<HabitLog[]>([]);
@@ -49,25 +51,39 @@ export default function Dashboard() {
 
   const loadData = useCallback(async () => {
     setLoading(true);
+    if (!user) {
+      setHabits([]);
+      setLogs([]);
+      setDeepWorkToday(0);
+      setRevenueMTD(0);
+      setStreak(0);
+      setRecentActivity([]);
+      setLoading(false);
+      return;
+    }
+
     try {
       // Load habits
       const { data: habitsData } = await supabase
         .from("habits")
         .select("*")
         .eq("is_active", true)
-        .order("sort_order");
+        .order("sort_order")
+        .filter("user_id", "eq", user.id);
 
       // Load today's logs
       const { data: logsData } = await supabase
         .from("habit_logs")
         .select("*")
-        .eq("date", today);
+        .eq("date", today)
+        .filter("user_id", "eq", user.id);
 
       // Deep work today
       const { data: dwData } = await supabase
         .from("deep_work_sessions")
         .select("hours")
-        .eq("date", today);
+        .eq("date", today)
+        .filter("user_id", "eq", user.id);
 
       // Revenue MTD
       const startOfMonth = today.substring(0, 7) + "-01";
@@ -76,7 +92,8 @@ export default function Dashboard() {
         .select("amount")
         .eq("type", "income")
         .gte("date", startOfMonth)
-        .lte("date", today);
+        .lte("date", today)
+        .filter("user_id", "eq", user.id);
 
       // Calculate streak - consecutive days with at least 1 habit logged
       let streakCount = 0;
@@ -88,6 +105,7 @@ export default function Dashboard() {
           .from("habit_logs")
           .select("id")
           .eq("date", dateStr)
+          .filter("user_id", "eq", user.id)
           .limit(1);
         if (dayLogs && dayLogs.length > 0) {
           streakCount++;
@@ -106,6 +124,7 @@ export default function Dashboard() {
       const { data: recentLogs } = await supabase
         .from("habit_logs")
         .select("*, habits(name)")
+        .filter("user_id", "eq", user.id)
         .order("created_at", { ascending: false })
         .limit(5);
 
@@ -139,7 +158,7 @@ export default function Dashboard() {
       showToast("Failed to load dashboard data", "error");
     }
     setLoading(false);
-  }, [today, showToast]);
+  }, [today, showToast, user]);
 
   useEffect(() => {
     loadData();
@@ -175,11 +194,16 @@ export default function Dashboard() {
   const progress = habits.length > 0 ? (completedCount / habits.length) * 100 : 0;
 
   const toggleBooleanHabit = async (habit: Habit) => {
+    if (!user) return;
     const existingLog = logs.find((l) => l.habit_id === habit.id);
 
     if (existingLog && existingLog.value > 0) {
       // Remove log
-      const { error } = await supabase.from("habit_logs").delete().eq("id", existingLog.id);
+      const { error } = await supabase
+        .from("habit_logs")
+        .delete()
+        .eq("id", existingLog.id)
+        .filter("user_id", "eq", user.id);
       if (error) {
         showToast(`Failed to update "${habit.name}"`, "error");
         return;
@@ -190,12 +214,18 @@ export default function Dashboard() {
     }
 
     // Upsert log
+    const payload: TablesInsert<"habit_logs"> & { user_id: string } = {
+      habit_id: habit.id,
+      date: today,
+      value: 1,
+      entry_type: "boolean",
+      time_minutes: null,
+      user_id: user.id,
+    };
+
     const { data, error } = await supabase
       .from("habit_logs")
-      .upsert(
-        { habit_id: habit.id, date: today, value: 1, entry_type: "boolean", time_minutes: null },
-        { onConflict: "habit_id,date" }
-      )
+      .upsert(payload, { onConflict: "habit_id,date" })
       .select()
       .single();
 
@@ -229,7 +259,7 @@ export default function Dashboard() {
   };
 
   const saveHabitInput = async () => {
-    if (!editingHabit) return;
+    if (!editingHabit || !user) return;
 
     const inputType = getHabitInputType(editingHabit.input_type);
     const existing = logs.find((log) => log.habit_id === editingHabit.id);
@@ -238,16 +268,25 @@ export default function Dashboard() {
       const value = parseFloat(inputValue);
       if (!Number.isFinite(value) || value <= 0) {
         if (existing) {
-          await supabase.from("habit_logs").delete().eq("id", existing.id);
+          await supabase
+            .from("habit_logs")
+            .delete()
+            .eq("id", existing.id)
+            .filter("user_id", "eq", user.id);
           setLogs((prev) => prev.filter((log) => log.id !== existing.id));
         }
       } else {
+        const payload: TablesInsert<"habit_logs"> & { user_id: string } = {
+          habit_id: editingHabit.id,
+          date: today,
+          value,
+          entry_type: "number",
+          time_minutes: null,
+          user_id: user.id,
+        };
         const { data } = await supabase
           .from("habit_logs")
-          .upsert(
-            { habit_id: editingHabit.id, date: today, value, entry_type: "number", time_minutes: null },
-            { onConflict: "habit_id,date" }
-          )
+          .upsert(payload, { onConflict: "habit_id,date" })
           .select()
           .single();
         if (data) {
@@ -260,17 +299,26 @@ export default function Dashboard() {
       const timeMinutes = parseTimeInputToMinutes(inputValue);
       if (timeMinutes === null) {
         if (existing) {
-          await supabase.from("habit_logs").delete().eq("id", existing.id);
+          await supabase
+            .from("habit_logs")
+            .delete()
+            .eq("id", existing.id)
+            .filter("user_id", "eq", user.id);
           setLogs((prev) => prev.filter((log) => log.id !== existing.id));
         }
       } else {
         const hourValue = Math.round((timeMinutes / 60) * 100) / 100;
+        const payload: TablesInsert<"habit_logs"> & { user_id: string } = {
+          habit_id: editingHabit.id,
+          date: today,
+          value: hourValue,
+          entry_type: "time",
+          time_minutes: timeMinutes,
+          user_id: user.id,
+        };
         const { data } = await supabase
           .from("habit_logs")
-          .upsert(
-            { habit_id: editingHabit.id, date: today, value: hourValue, entry_type: "time", time_minutes: timeMinutes },
-            { onConflict: "habit_id,date" }
-          )
+          .upsert(payload, { onConflict: "habit_id,date" })
           .select()
           .single();
         if (data) {

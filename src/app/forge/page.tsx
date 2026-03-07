@@ -15,7 +15,8 @@ import {
 import { supabase } from "@/lib/supabase";
 import { useToast } from "@/components/ui/ToastProvider";
 import Modal from "@/components/ui/Modal";
-import type { Tables } from "@/lib/database.types";
+import { useAuth } from "@/contexts/AuthContext";
+import type { Tables, TablesInsert } from "@/lib/database.types";
 import {
     averageTimeMinutes,
     clampPercent,
@@ -58,6 +59,7 @@ const workoutTypeColors: Record<string, string> = {
 };
 
 export default function ForgePage() {
+    const { user } = useAuth();
     const { showToast } = useToast();
     const malaysiaToday = getMalaysiaDateParts();
     const [year] = useState(malaysiaToday.year);
@@ -93,15 +95,25 @@ export default function ForgePage() {
     useEffect(() => {
         const loadData = async () => {
             setLoading(true);
+            if (!user) {
+                setHabits([]);
+                setLogs([]);
+                setDeepWorkSessions([]);
+                setWorkouts([]);
+                setDailyMeta(null);
+                setLoading(false);
+                return;
+            }
+
             const startDate = monthStartStr;
             const endDate = dateStr(year, month, daysInMonth);
 
             const [habitsRes, logsRes, dwRes, woRes, metaRes] = await Promise.all([
-                supabase.from("habits").select("*").eq("is_active", true).order("sort_order"),
-                supabase.from("habit_logs").select("*").gte("date", logQueryStartStr).lte("date", endDate),
-                supabase.from("deep_work_sessions").select("*").gte("date", startDate).lte("date", endDate).order("date", { ascending: false }),
-                supabase.from("workouts").select("*").gte("date", startDate).lte("date", endDate).order("date", { ascending: false }),
-                supabase.from("daily_metadata").select("*").eq("date", todayStr).single(),
+                supabase.from("habits").select("*").eq("is_active", true).filter("user_id", "eq", user.id).order("sort_order"),
+                supabase.from("habit_logs").select("*").filter("user_id", "eq", user.id).gte("date", logQueryStartStr).lte("date", endDate),
+                supabase.from("deep_work_sessions").select("*").filter("user_id", "eq", user.id).gte("date", startDate).lte("date", endDate).order("date", { ascending: false }),
+                supabase.from("workouts").select("*").filter("user_id", "eq", user.id).gte("date", startDate).lte("date", endDate).order("date", { ascending: false }),
+                supabase.from("daily_metadata").select("*").eq("date", todayStr).filter("user_id", "eq", user.id).single(),
             ]);
 
             setHabits(habitsRes.data || []);
@@ -113,10 +125,11 @@ export default function ForgePage() {
         };
 
         void loadData();
-    }, [year, month, daysInMonth, todayStr, logQueryStartStr, monthStartStr]);
+    }, [year, month, daysInMonth, todayStr, logQueryStartStr, monthStartStr, user]);
 
     // Toggle boolean habit or open input modal
     const handleCellClick = async (habit: Habit, day: number) => {
+        if (!user) return;
         if (day > todayDay) return; // Can't log future
         const inputType = getHabitInputType(habit.input_type);
         const ds = dateStr(year, month, day);
@@ -140,12 +153,24 @@ export default function ForgePage() {
 
         // Boolean toggle
         if (existing && existing.value > 0) {
-            await supabase.from("habit_logs").delete().eq("id", existing.id);
+            await supabase
+                .from("habit_logs")
+                .delete()
+                .eq("id", existing.id)
+                .filter("user_id", "eq", user.id);
             setLogs((prev) => prev.filter((l) => l.id !== existing.id));
         } else {
+            const payload: TablesInsert<"habit_logs"> & { user_id: string } = {
+                habit_id: habit.id,
+                date: ds,
+                value: 1,
+                entry_type: "boolean",
+                time_minutes: null,
+                user_id: user.id,
+            };
             const { data } = await supabase
                 .from("habit_logs")
-                .upsert({ habit_id: habit.id, date: ds, value: 1, entry_type: "boolean", time_minutes: null }, { onConflict: "habit_id,date" })
+                .upsert(payload, { onConflict: "habit_id,date" })
                 .select()
                 .single();
             if (data) setLogs((prev) => [...prev.filter((l) => !(l.habit_id === habit.id && l.date === ds)), data]);
@@ -153,7 +178,7 @@ export default function ForgePage() {
     };
 
     const saveCellValue = async () => {
-        if (!editingCell) return;
+        if (!editingCell || !user) return;
         const ds = dateStr(year, month, editingCell.day);
         const inputType = getHabitInputType(editingCell.habit.input_type);
         const existing = logs.find((l) => l.habit_id === editingCell.habit.id && l.date === ds);
@@ -162,16 +187,25 @@ export default function ForgePage() {
             const value = parseFloat(cellValue);
             if (!Number.isFinite(value) || value <= 0) {
                 if (existing) {
-                    await supabase.from("habit_logs").delete().eq("id", existing.id);
+                    await supabase
+                        .from("habit_logs")
+                        .delete()
+                        .eq("id", existing.id)
+                        .filter("user_id", "eq", user.id);
                     setLogs((prev) => prev.filter((l) => l.id !== existing.id));
                 }
             } else {
+                const payload: TablesInsert<"habit_logs"> & { user_id: string } = {
+                    habit_id: editingCell.habit.id,
+                    date: ds,
+                    value,
+                    entry_type: "number",
+                    time_minutes: null,
+                    user_id: user.id,
+                };
                 const { data } = await supabase
                     .from("habit_logs")
-                    .upsert(
-                        { habit_id: editingCell.habit.id, date: ds, value, entry_type: "number", time_minutes: null },
-                        { onConflict: "habit_id,date" }
-                    )
+                    .upsert(payload, { onConflict: "habit_id,date" })
                     .select()
                     .single();
                 if (data) setLogs((prev) => [...prev.filter((l) => !(l.habit_id === editingCell.habit.id && l.date === ds)), data]);
@@ -180,17 +214,26 @@ export default function ForgePage() {
             const timeMinutes = parseTimeInputToMinutes(cellValue);
             if (timeMinutes === null) {
                 if (existing) {
-                    await supabase.from("habit_logs").delete().eq("id", existing.id);
+                    await supabase
+                        .from("habit_logs")
+                        .delete()
+                        .eq("id", existing.id)
+                        .filter("user_id", "eq", user.id);
                     setLogs((prev) => prev.filter((l) => l.id !== existing.id));
                 }
             } else {
                 const hourValue = Math.round((timeMinutes / 60) * 100) / 100;
+                const payload: TablesInsert<"habit_logs"> & { user_id: string } = {
+                    habit_id: editingCell.habit.id,
+                    date: ds,
+                    value: hourValue,
+                    entry_type: "time",
+                    time_minutes: timeMinutes,
+                    user_id: user.id,
+                };
                 const { data } = await supabase
                     .from("habit_logs")
-                    .upsert(
-                        { habit_id: editingCell.habit.id, date: ds, value: hourValue, entry_type: "time", time_minutes: timeMinutes },
-                        { onConflict: "habit_id,date" }
-                    )
+                    .upsert(payload, { onConflict: "habit_id,date" })
                     .select()
                     .single();
                 if (data) setLogs((prev) => [...prev.filter((l) => !(l.habit_id === editingCell.habit.id && l.date === ds)), data]);
@@ -288,10 +331,11 @@ export default function ForgePage() {
     }, [dailyMeta]);
 
     const saveDailyMeta = async (updates: Partial<DailyMeta>) => {
-        const payload = { date: todayStr, ...updates };
+        if (!user) return;
+        const payload: TablesInsert<"daily_metadata"> & { user_id: string } = { date: todayStr, ...updates, user_id: user.id };
         const { data } = await supabase
             .from("daily_metadata")
-            .upsert(payload, { onConflict: "date" })
+            .upsert(payload, { onConflict: "date,user_id" })
             .select()
             .single();
         if (data) setDailyMeta(data);
@@ -299,6 +343,7 @@ export default function ForgePage() {
 
     // Add deep work session
     const addDeepWork = async () => {
+        if (!user) return;
         const { data, error } = await supabase
             .from("deep_work_sessions")
             .insert({
@@ -306,6 +351,7 @@ export default function ForgePage() {
                 hours: parseFloat(dwForm.hours),
                 focus: dwForm.focus,
                 completed: dwForm.completed,
+                user_id: user.id,
             })
             .select()
             .single();
@@ -319,6 +365,7 @@ export default function ForgePage() {
 
     // Add workout
     const addWorkout = async () => {
+        if (!user) return;
         const { data, error } = await supabase
             .from("workouts")
             .insert({
@@ -326,6 +373,7 @@ export default function ForgePage() {
                 type: woForm.type,
                 duration_minutes: parseInt(woForm.duration),
                 notes: woForm.notes,
+                user_id: user.id,
             })
             .select()
             .single();

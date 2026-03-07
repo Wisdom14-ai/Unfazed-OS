@@ -29,7 +29,8 @@ import {
 import { supabase } from "@/lib/supabase";
 import { useToast } from "@/components/ui/ToastProvider";
 import Modal from "@/components/ui/Modal";
-import type { Tables } from "@/lib/database.types";
+import { useAuth } from "@/contexts/AuthContext";
+import type { Tables, TablesInsert } from "@/lib/database.types";
 
 type Transaction = Tables<"transactions">;
 type Lead = Tables<"leads">;
@@ -53,6 +54,7 @@ const industryIcons: Record<string, React.ElementType> = {
 };
 
 export default function WarRoomPage() {
+    const { user } = useAuth();
     const { showToast } = useToast();
     const [transactions, setTransactions] = useState<Transaction[]>([]);
     const [leads, setLeads] = useState<Lead[]>([]);
@@ -75,15 +77,22 @@ export default function WarRoomPage() {
 
     const loadData = useCallback(async () => {
         setLoading(true);
+        if (!user) {
+            setTransactions([]);
+            setLeads([]);
+            setLoading(false);
+            return;
+        }
+
         const startOfMonth = getTodayStr().substring(0, 7) + "-01";
         const [txRes, leadsRes] = await Promise.all([
-            supabase.from("transactions").select("*").gte("date", startOfMonth).order("date", { ascending: false }),
-            supabase.from("leads").select("*").order("created_at", { ascending: false }),
+            supabase.from("transactions").select("*").filter("user_id", "eq", user.id).gte("date", startOfMonth).order("date", { ascending: false }),
+            supabase.from("leads").select("*").filter("user_id", "eq", user.id).order("created_at", { ascending: false }),
         ]);
         setTransactions(txRes.data || []);
         setLeads(leadsRes.data || []);
         setLoading(false);
-    }, []);
+    }, [user]);
 
     useEffect(() => {
         loadData();
@@ -117,19 +126,22 @@ export default function WarRoomPage() {
 
     // Add transaction
     const addTransaction = async () => {
+        if (!user) return;
         if (!txDesc || !txAmount) {
             showToast("Fill in description and amount", "error");
             return;
         }
+        const insertPayload: TablesInsert<"transactions"> & { user_id: string } = {
+            date: getTodayStr(),
+            description: txDesc,
+            type: txType,
+            amount: parseFloat(txAmount),
+            category: txCategory,
+            user_id: user.id,
+        };
         const { data, error } = await supabase
             .from("transactions")
-            .insert({
-                date: getTodayStr(),
-                description: txDesc,
-                type: txType,
-                amount: parseFloat(txAmount),
-                category: txCategory,
-            })
+            .insert(insertPayload)
             .select()
             .single();
         if (!error && data) {
@@ -141,26 +153,30 @@ export default function WarRoomPage() {
     };
 
     const deleteTransaction = async (id: string) => {
-        await supabase.from("transactions").delete().eq("id", id);
+        if (!user) return;
+        await supabase.from("transactions").delete().eq("id", id).filter("user_id", "eq", user.id);
         setTransactions((prev) => prev.filter((t) => t.id !== id));
         showToast("Transaction deleted", "info");
     };
 
     // Add lead
     const addLead = async () => {
+        if (!user) return;
         if (!leadForm.company) {
             showToast("Company name is required", "error");
             return;
         }
+        const insertPayload: TablesInsert<"leads"> & { user_id: string } = {
+            company: leadForm.company,
+            contact: leadForm.contact,
+            industry: leadForm.industry,
+            stage: leadForm.stage,
+            value: parseFloat(leadForm.value) || 0,
+            user_id: user.id,
+        };
         const { data, error } = await supabase
             .from("leads")
-            .insert({
-                company: leadForm.company,
-                contact: leadForm.contact,
-                industry: leadForm.industry,
-                stage: leadForm.stage,
-                value: parseFloat(leadForm.value) || 0,
-            })
+            .insert(insertPayload)
             .select()
             .single();
         if (!error && data) {
@@ -172,7 +188,8 @@ export default function WarRoomPage() {
     };
 
     const deleteLead = async (id: string) => {
-        await supabase.from("leads").delete().eq("id", id);
+        if (!user) return;
+        await supabase.from("leads").delete().eq("id", id).filter("user_id", "eq", user.id);
         setLeads((prev) => prev.filter((l) => l.id !== id));
         showToast("Lead removed", "info");
     };

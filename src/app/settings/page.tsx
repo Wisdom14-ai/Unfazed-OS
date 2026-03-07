@@ -21,7 +21,8 @@ import {
 import { supabase } from "@/lib/supabase";
 import { useToast } from "@/components/ui/ToastProvider";
 import Modal from "@/components/ui/Modal";
-import type { Tables } from "@/lib/database.types";
+import { useAuth } from "@/contexts/AuthContext";
+import type { Tables, TablesInsert } from "@/lib/database.types";
 import {
     getHabitInputType,
     getHabitTimeMode,
@@ -71,6 +72,7 @@ const iconOptions = ["star", "sun", "moon", "flame", "brain", "book-open", "dumb
 const categoryOptions = ["90-Day Challenge", "Ibadah", "Reflection", "Health", "Physical", "Business", "Growth", "Productivity", "Discipline"];
 
 export default function SettingsPage() {
+    const { user } = useAuth();
     const { showToast } = useToast();
     const [activeTab, setActiveTab] = useState<Tab>("profile");
     const [profile, setProfile] = useState<UserProfile | null>(null);
@@ -100,9 +102,16 @@ export default function SettingsPage() {
 
     const loadData = useCallback(async () => {
         setLoading(true);
+        if (!user) {
+            setProfile(null);
+            setHabits([]);
+            setLoading(false);
+            return;
+        }
+
         const [profileRes, habitsRes] = await Promise.all([
-            supabase.from("user_profile").select("*").limit(1).single(),
-            supabase.from("habits").select("*").order("sort_order"),
+            supabase.from("user_profile").select("*").filter("user_id", "eq", user.id).limit(1).single(),
+            supabase.from("habits").select("*").filter("user_id", "eq", user.id).order("sort_order"),
         ]);
         if (profileRes.data) {
             setProfile(profileRes.data);
@@ -114,14 +123,14 @@ export default function SettingsPage() {
         }
         setHabits(habitsRes.data || []);
         setLoading(false);
-    }, []);
+    }, [user]);
 
     useEffect(() => {
         loadData();
     }, [loadData]);
 
     const saveProfile = async () => {
-        if (!profile) return;
+        if (!profile || !user) return;
         setSaving(true);
         const { error } = await supabase
             .from("user_profile")
@@ -133,7 +142,8 @@ export default function SettingsPage() {
                 timezone,
                 updated_at: new Date().toISOString(),
             })
-            .eq("id", profile.id);
+            .eq("id", profile.id)
+            .filter("user_id", "eq", user.id);
 
         if (!error) {
             showToast("Profile saved! ✓", "success");
@@ -172,6 +182,7 @@ export default function SettingsPage() {
     };
 
     const saveHabit = async () => {
+        if (!user) return;
         if (!habitForm.name) {
             showToast("Habit name is required", "error");
             return;
@@ -187,14 +198,25 @@ export default function SettingsPage() {
         };
 
         if (editingHabit) {
-            const { data, error } = await supabase.from("habits").update(payload).eq("id", editingHabit.id).select().single();
+            const { data, error } = await supabase
+                .from("habits")
+                .update(payload)
+                .eq("id", editingHabit.id)
+                .filter("user_id", "eq", user.id)
+                .select()
+                .single();
             if (!error && data) {
                 setHabits((prev) => prev.map((h) => (h.id === data.id ? data : h)));
                 showToast("Habit updated!", "success");
             }
         } else {
             const maxOrder = habits.reduce((max, h) => Math.max(max, h.sort_order), 0);
-            const { data, error } = await supabase.from("habits").insert({ ...payload, sort_order: maxOrder + 1 }).select().single();
+            const insertPayload: TablesInsert<"habits"> & { user_id: string } = {
+                ...payload,
+                sort_order: maxOrder + 1,
+                user_id: user.id,
+            };
+            const { data, error } = await supabase.from("habits").insert(insertPayload).select().single();
             if (!error && data) {
                 setHabits((prev) => [...prev, data]);
                 showToast("Habit added! 🎯", "success");
@@ -204,8 +226,15 @@ export default function SettingsPage() {
     };
 
     const toggleHabitActive = async (habit: Habit) => {
+        if (!user) return;
         const newActive = !habit.is_active;
-        const { data } = await supabase.from("habits").update({ is_active: newActive }).eq("id", habit.id).select().single();
+        const { data } = await supabase
+            .from("habits")
+            .update({ is_active: newActive })
+            .eq("id", habit.id)
+            .filter("user_id", "eq", user.id)
+            .select()
+            .single();
         if (data) {
             setHabits((prev) => prev.map((h) => (h.id === data.id ? data : h)));
             showToast(newActive ? "Habit activated" : "Habit deactivated", "info");
@@ -213,7 +242,8 @@ export default function SettingsPage() {
     };
 
     const removeHabit = async (id: string) => {
-        await supabase.from("habits").delete().eq("id", id);
+        if (!user) return;
+        await supabase.from("habits").delete().eq("id", id).filter("user_id", "eq", user.id);
         setHabits((prev) => prev.filter((h) => h.id !== id));
         showToast("Habit deleted", "info");
     };

@@ -5,7 +5,8 @@ import { Sparkles, BookOpen, PenLine, Clock, Quote, Lightbulb, Brain, Plus, Tras
 import { supabase } from "@/lib/supabase";
 import { useToast } from "@/components/ui/ToastProvider";
 import Modal from "@/components/ui/Modal";
-import type { Tables } from "@/lib/database.types";
+import { useAuth } from "@/contexts/AuthContext";
+import type { Tables, TablesInsert } from "@/lib/database.types";
 
 type JournalEntry = Tables<"journal_entries">;
 type BookNote = Tables<"book_notes">;
@@ -31,6 +32,7 @@ const colorOptions = [
 ];
 
 export default function AlchemyPage() {
+    const { user } = useAuth();
     const { showToast } = useToast();
     const [journalText, setJournalText] = useState("");
     const [selectedPrompt, setSelectedPrompt] = useState<string | null>(null);
@@ -48,10 +50,20 @@ export default function AlchemyPage() {
 
     const loadData = useCallback(async () => {
         setLoading(true);
+        if (!user) {
+            setBookNotes([]);
+            setTodayEntry(null);
+            setPastEntries([]);
+            setJournalText("");
+            setSelectedPrompt(null);
+            setLoading(false);
+            return;
+        }
+
         const [notesRes, todayRes, pastRes] = await Promise.all([
-            supabase.from("book_notes").select("*").order("created_at", { ascending: false }),
-            supabase.from("journal_entries").select("*").eq("date", today).single(),
-            supabase.from("journal_entries").select("*").neq("date", today).order("date", { ascending: false }).limit(7),
+            supabase.from("book_notes").select("*").filter("user_id", "eq", user.id).order("created_at", { ascending: false }),
+            supabase.from("journal_entries").select("*").eq("date", today).filter("user_id", "eq", user.id).single(),
+            supabase.from("journal_entries").select("*").neq("date", today).filter("user_id", "eq", user.id).order("date", { ascending: false }).limit(7),
         ]);
         setBookNotes(notesRes.data || []);
         if (todayRes.data) {
@@ -61,25 +73,27 @@ export default function AlchemyPage() {
         }
         setPastEntries(pastRes.data || []);
         setLoading(false);
-    }, [today]);
+    }, [today, user]);
 
     useEffect(() => {
         loadData();
     }, [loadData]);
 
     const saveJournal = async () => {
+        if (!user) return;
         setSaving(true);
         const wordCount = journalText.split(/\s+/).filter(Boolean).length;
-        const payload = {
+        const payload: TablesInsert<"journal_entries"> & { user_id: string } = {
             date: today,
             content: journalText,
             prompt_used: selectedPrompt || "",
             word_count: wordCount,
+            user_id: user.id,
         };
 
         const { data, error } = await supabase
             .from("journal_entries")
-            .upsert(payload, { onConflict: "date" })
+            .upsert(payload, { onConflict: "date,user_id" })
             .select()
             .single();
 
@@ -93,6 +107,7 @@ export default function AlchemyPage() {
     };
 
     const addBookNote = async () => {
+        if (!user) return;
         if (!noteForm.title) {
             showToast("Book title is required", "error");
             return;
@@ -105,6 +120,7 @@ export default function AlchemyPage() {
                 model: noteForm.model,
                 insight: noteForm.insight,
                 color: noteForm.color,
+                user_id: user.id,
             })
             .select()
             .single();
@@ -117,7 +133,8 @@ export default function AlchemyPage() {
     };
 
     const deleteBookNote = async (id: string) => {
-        await supabase.from("book_notes").delete().eq("id", id);
+        if (!user) return;
+        await supabase.from("book_notes").delete().eq("id", id).filter("user_id", "eq", user.id);
         setBookNotes((prev) => prev.filter((n) => n.id !== id));
         showToast("Note deleted", "info");
     };
